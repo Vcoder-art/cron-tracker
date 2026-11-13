@@ -1,0 +1,27 @@
+{
+  "name": "accord-cron-lab",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.js\"",
+    "mock": "node mock-accord/server.js",
+    "sync": "node scripts/sync.js",
+    "demo:tracker": "node scripts/demo-tracker.js",
+    "api": "node src/api/server.js",
+    "worker": "node src/worker/worker.js",
+    "e2e": "node scripts/e2e.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.21.1",
+    "cron-parser": "^4.9.0",
+    "dotenv": "^18.0.10",
+    "express": "^4.22.3",
+    "mongoose": "^6.13.12",
+    "node-cron": "^4.6.0"
+  }
+}
