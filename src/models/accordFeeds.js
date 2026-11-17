@@ -1,8 +1,8 @@
-// Target + staging ("dump") collections for the lab Accord feeds.
-// In the main app these already exist in models/accord_cron-model.js; the only additions there are:
-//   - dump rows get `runId` + `stagedAt` (J2: per-run staging, TTL cleans crash leftovers)
-//   - target rows get `cronRunId` (J3: count what THIS run actually wrote)
-//   - $merge needs a UNIQUE index on the `on` field of the target collection.
+// Accord feed collections: a staging ("dump") collection and a real collection per feed.
+// In the main app these already exist; the additions are:
+//   - staging rows get runId + stagedAt (stagedAt has a TTL, so crash leftovers disappear)
+//   - real rows get cronRunId (so a run can count what it wrote)
+//   - $merge needs a UNIQUE index on the key field of the real collection
 const { mongoose } = require('../db');
 
 const STAGING_TTL_SECONDS = 24 * 60 * 60;

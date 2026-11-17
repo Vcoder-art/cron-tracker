@@ -1,5 +1,4 @@
-// The actual Accord jobs. Each is a few lines of configuration on top of the factory.
-// This is what ~30 copy-pasted functions in accord_cron-controller.js collapse into.
+// The Accord jobs. Most are just a few settings passed to defineAccordJob.
 const { defineAccordJob } = require('./defineAccordJob');
 const m = require('../models/accordFeeds');
 
@@ -35,8 +34,8 @@ const sclassMst = defineAccordJob({
   project: { classcode: 1, classname: 1 },
 });
 
-// Escape hatch example: a job that does NOT fit the factory is just a function with the same contract.
-// (In the main app: updateSchemeStatus, updateSchemename, ...)
+// A job that does not fit the pattern is just a normal function with the same rule:
+// async (ctx) => ({ fetched, processed }), throw on failure.
 async function navSanityCheck({ log }) {
   const total = await m.CurrentNav.estimatedDocumentCount();
   const bad = await m.CurrentNav.countDocuments({ $or: [{ navrs: { $lte: 0 } }, { navrs: null }] });
