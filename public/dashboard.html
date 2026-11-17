@@ -43,7 +43,8 @@
   .why { font-size: 12px; color: var(--muted); margin-top: 4px; max-width: 360px; }
   .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-left: 6px; }
   button { font: inherit; border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-  button:hover { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   input { font: inherit; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); }
   .actions { display: flex; gap: 6px; }
   #history { margin-top: 16px; display: none; }
@@ -147,7 +148,13 @@
         el('td', { class: 'num' }, lr ? lr.recordsFetched : '—'),
         el('td', { class: 'num' }, lr ? lr.recordsProcessed : '—'),
         el('td', {}, time(j.nextRunAt), el('div', { class: 'why' }, ago(j.nextRunAt))),
-        el('td', {}, el('div', { class: 'actions' }, el('button', { onclick: () => showHistory(j) }, 'History')))
+        el('td', {}, el('div', { class: 'actions' },
+          el('button', {
+            onclick: (ev) => runNow(j, ev.currentTarget),
+            disabled: j.status === 'disabled' || !!j.running,
+            title: j.status === 'disabled' ? 'Job is disabled' : j.running ? 'Already running' : 'Start this job now',
+          }, 'Run now'),
+          el('button', { onclick: () => showHistory(j) }, 'History')))
       );
     }));
   }
@@ -164,6 +171,22 @@
     }
   }
 
+  // Start a job now. The API answers at once; the result shows up on the following refreshes.
+  async function runNow(job, btn) {
+    if (!confirm(`Run "${job.name}" now?`)) return;
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+    try {
+      await api(`/api/health/crons/${encodeURIComponent(job.jobKey)}/run`, { method: 'POST' });
+      document.getElementById('updated').textContent = `Started ${job.name} - watch its status and History`;
+      setTimeout(load, 1500); // quick refresh so "running" shows up
+    } catch (e) {
+      document.getElementById('updated').replaceChildren(el('span', { class: 'error' }, `Run ${job.name}: ${e.message}`));
+      btn.disabled = false;
+      btn.textContent = 'Run now';
+    }
+  }
+
   let openHistory = null;
   async function showHistory(job, quiet) {
     openHistory = job;
@@ -172,7 +195,7 @@
     document.getElementById('historyTitle').textContent = `${job.name} - last 20 runs`;
     const runs = await api(`/api/health/crons/${encodeURIComponent(job.jobKey)}/runs?limit=20`);
     document.getElementById('historyRows').replaceChildren(...(runs.length ? runs.map((r) => el('tr', {},
-      el('td', {}, time(r.startedAt)),
+      el('td', {}, time(r.startedAt), r.trigger === 'manual' ? el('span', { class: 'tag' }, 'manual') : null),
       el('td', {}, r.scheduledFor ? time(r.scheduledFor) : '—'),
       el('td', {}, chip(r.status)),
       el('td', {}, dur(r.durationMs)),

@@ -19,6 +19,7 @@ const cronRunSchema = new mongoose.Schema(
       ],
     },
     scheduledFor: Date, // the crontab time this call belongs to
+    trigger: { type: String, enum: ['cron', 'manual'], default: 'cron' }, // crontab call or dashboard "Run now"
 
     startedAt: { type: Date, required: true },
     finishedAt: Date,

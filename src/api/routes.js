@@ -73,6 +73,19 @@ router.get('/health/crons', requireAdmin, async (req, res) => {
   }
 });
 
+// "Run now" button on the dashboard. Same run as a crontab call (same lock, same history),
+// but needs the admin token instead of the cron secret, and is recorded as trigger: 'manual'.
+// Answers 202 straight away; the dashboard picks up the result on its next refresh.
+router.post('/health/crons/:jobKey/run', requireAdmin, (req, res) => {
+  const { jobKey } = req.params;
+  const def = registry.find((d) => d.jobKey === jobKey);
+  if (!def) return res.status(404).json({ error: `unknown job ${jobKey}` });
+
+  tracker.run(jobKey, def.handler, { trigger: 'manual' })
+    .catch((e) => console.error(`[api] ${jobKey} could not run:`, e.message));
+  res.status(202).json({ accepted: true, jobKey });
+});
+
 // Last N runs of one job (default 20, max 100).
 router.get('/health/crons/:jobKey/runs', requireAdmin, async (req, res) => {
   try {

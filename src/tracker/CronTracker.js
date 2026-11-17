@@ -27,8 +27,9 @@ const log = (jobKey, ...args) => console.log(`[${jobKey}]`, ...args);
 // ---------------------------------------------------------------------------------------------
 const runningNow = new Set();
 
-function run(jobKey, jobFn) {
-  const promise = runTracked(jobKey, jobFn);
+// trigger: 'cron' (server crontab) or 'manual' (Run now button on the dashboard). Stored on the run.
+function run(jobKey, jobFn, { trigger = 'cron' } = {}) {
+  const promise = runTracked(jobKey, jobFn, trigger);
   runningNow.add(promise);
   promise.finally(() => runningNow.delete(promise)).catch(() => {});
   return promise;
@@ -47,7 +48,7 @@ async function waitForRunningJobs(timeoutMs) {
 // ---------------------------------------------------------------------------------------------
 // The main flow
 // ---------------------------------------------------------------------------------------------
-async function runTracked(jobKey, jobFn) {
+async function runTracked(jobKey, jobFn, trigger) {
   const job = await CronJob.findOne({ jobKey }).lean();
   if (!job) throw new Error(`Unknown job "${jobKey}" - is it in registry.js?`);
 
@@ -57,6 +58,7 @@ async function runTracked(jobKey, jobFn) {
     _id: runId,
     jobKey,
     scheduledFor: prevSlot(job.schedules, job.timezone, startedAt), // the crontab time this call belongs to
+    trigger,
     startedAt,
     host: os.hostname(),
     pid: process.pid,
@@ -74,7 +76,7 @@ async function runTracked(jobKey, jobFn) {
 
   // 3. Running
   await CronRun.create({ ...runDoc, status: 'running' });
-  log(jobKey, `started run ${runId}`);
+  log(jobKey, `started run ${runId}${trigger === 'manual' ? ' (manual)' : ''}`);
 
   // 4. Do the work
   const stopHeartbeat = startHeartbeat(jobKey, runId);
