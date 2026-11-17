@@ -1,27 +1,30 @@
-// Copies registry.js into cron_jobs. Runs at worker startup (and via `npm run sync`).
+// Copies the job list from registry.js into the cron_jobs collection.
+// Runs when the API starts (and with `npm run sync`).
 //
-// Rules:
-//   - Validate every definition first; one bad cron expression aborts the whole sync,
-//     so a typo can never half-apply.
-//   - Upsert only DEFINITION_FIELDS. lock / lastRun / counters are never overwritten.
-//   - A job deleted from code is NOT deleted from Mongo: it is marked inRegistry=false
-//     and disabled, so its history stays visible.
+//   - Checks every job first. One bad cron expression stops the whole sync.
+//   - Only overwrites the definition fields (name, schedules, ...). Never lock / lastRun / counters.
+//   - A job removed from registry.js is not deleted: it is disabled and hidden, its history stays.
 const cronParser = require('cron-parser');
 const CronJob = require('../models/CronJob');
 require('../models/CronRun');
-require('../models/CronWorker');
+require('../models/accordFeeds');
 const registry = require('./registry');
 const { TIMEZONE } = require('../config');
+
+// Fields that come from registry.js. Everything else on a job is written by the tracker.
+const DEFINITION_FIELDS = ['name', 'description', 'schedules', 'timezone', 'enabled', 'criticality', 'graceMin', 'maxDurationMin'];
 
 function validate(defs) {
   const errors = [];
   const seen = new Set();
+
   for (const def of defs) {
     if (!def.jobKey) errors.push('job without jobKey');
     if (seen.has(def.jobKey)) errors.push(`duplicate jobKey ${def.jobKey}`);
     seen.add(def.jobKey);
+
     if (typeof def.handler !== 'function') errors.push(`${def.jobKey}: handler must be a function`);
-    if (def.scheduler && !['internal', 'external'].includes(def.scheduler)) errors.push(`${def.jobKey}: scheduler must be internal|external`);
+
     if (!Array.isArray(def.schedules) || def.schedules.length === 0) {
       errors.push(`${def.jobKey}: schedules must be a non-empty array`);
       continue;
@@ -34,30 +37,26 @@ function validate(defs) {
       }
     }
   }
+
   if (errors.length) throw new Error('Registry invalid:\n  ' + errors.join('\n  '));
 }
 
 async function syncRegistry() {
   validate(registry);
 
-  // Make sure every index exists before anything writes: unique jobKey, TTL on runs,
-  // and the unique keys that $merge needs on the feed target collections.
-  await Promise.all(Object.values(CronJob.db.models).map((m) => m.init()));
+  // Create all indexes first (unique jobKey, 90-day TTL on runs, unique keys on the feed collections).
+  await Promise.all(Object.values(CronJob.db.models).map((model) => model.init()));
 
   const ops = registry.map((def) => {
-    const set = { inRegistry: true };
-    for (const f of CronJob.DEFINITION_FIELDS) if (def[f] !== undefined) set[f] = def[f];
-    if (set.timezone === undefined) set.timezone = TIMEZONE;
+    const fields = { inRegistry: true, timezone: TIMEZONE };
+    for (const f of DEFINITION_FIELDS) if (def[f] !== undefined) fields[f] = def[f];
     return {
       updateOne: {
         filter: { jobKey: def.jobKey },
-        // createdAt is set by hand because timestamps are off (see below). The health rules use it
-        // to avoid blaming slots that passed before the job was tracked.
-        update: { $set: set, $setOnInsert: { jobKey: def.jobKey, createdAt: new Date() } },
+        // createdAt: the health check ignores schedule times from before the job was tracked.
+        update: { $set: fields, $setOnInsert: { jobKey: def.jobKey, createdAt: new Date() } },
         upsert: true,
-        // Without this Mongoose adds updatedAt to every $set, so every job would look
-        // "modified" on every sync and the count would lie.
-        timestamps: false,
+        timestamps: false, // otherwise every job looks "updated" on every sync
       },
     };
   });
@@ -69,12 +68,7 @@ async function syncRegistry() {
     { $set: { inRegistry: false, enabled: false } }
   );
 
-  return {
-    inserted: result.upsertedCount,
-    updated: result.modifiedCount,
-    retired: retired.modifiedCount,
-    total: keys.length,
-  };
+  return { inserted: result.upsertedCount, updated: result.modifiedCount, retired: retired.modifiedCount, total: keys.length };
 }
 
 module.exports = { syncRegistry, validate };

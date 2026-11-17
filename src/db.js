@@ -1,4 +1,4 @@
-// Shared Mongo connection used by BOTH the API process and the worker process.
+// Shared Mongo connection used by the API process and the scripts.
 // Each process calls connectDB() once at startup.
 const mongoose = require('mongoose');
 const { MONGO_URI } = require('./config');

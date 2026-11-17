@@ -9,7 +9,7 @@ const NOW = new Date('2026-11-13T05:00:00Z');
 const ist = (hhmm, day = '2026-11-13') => new Date(`${day}T${hhmm}:00+05:30`);
 
 const baseJob = (over = {}) => ({
-  jobKey: 'current_nav', name: 'Current NAV', enabled: true, scheduler: 'internal', criticality: 'critical',
+  jobKey: 'current_nav', name: 'Current NAV', enabled: true, criticality: 'critical',
   schedules: ['1 4 * * *', '31 7 * * *', '1 10 * * *', '31 12 * * *'],
   timezone: 'Asia/Kolkata', graceMin: 15, maxDurationMin: 10, createdAt: ist('00:00', '2026-11-01'),
   lock: null, lastRun: null, consecutiveFailures: 0, ...over,
@@ -31,12 +31,7 @@ test('still inside grace: 10:01 slot not run yet at 10:10 -> healthy', () => {
 test('missed: 10:01 slot passed grace with no run -> delayed', () => {
   const h = computeJobHealth(baseJob({ lastRun: run('success', '07:31') }), NOW);
   assert.equal(h.status, 'delayed');
-  assert.match(h.reasons[0], /missed run due 13 Nov, 10:01 \(worker did not run it\)/);
-});
-
-test('external job miss blames the crontab', () => {
-  const h = computeJobHealth(baseJob({ scheduler: 'external', lastRun: run('success', '07:31') }), NOW);
-  assert.match(h.reasons[0], /crontab did not call it/);
+  assert.match(h.reasons[0], /missed run due 13 Nov, 10:01 \(crontab did not call it\)/);
 });
 
 test('slots from before tracking existed are not blamed', () => {
@@ -91,14 +86,11 @@ test('disabled jobs are not evaluated', () => {
   assert.equal(computeJobHealth(baseJob({ enabled: false }), NOW).status, 'disabled');
 });
 
-test('summary: critical failing -> failing; normal failing -> delayed; offline worker -> delayed', () => {
-  const j = (status, criticality, scheduler = 'internal') => ({ status, criticality, scheduler });
+test('summary: critical failing -> failing; normal failing -> delayed', () => {
+  const j = (status, criticality) => ({ status, criticality });
   assert.equal(summarize([j('failing', 'critical'), j('healthy', 'normal')]).overall, 'failing');
   assert.equal(summarize([j('failing', 'normal'), j('healthy', 'critical')]).overall, 'delayed');
   assert.equal(summarize([j('healthy', 'normal')]).overall, 'healthy');
-  const off = summarize([j('healthy', 'normal')], { schedulerOnline: false });
-  assert.equal(off.overall, 'delayed');
-  assert.match(off.reasons.join(), /worker is offline/);
   assert.deepEqual(summarize([j('healthy', 'normal'), j('disabled', 'normal')]).counts, { healthy: 1, delayed: 0, failing: 0, disabled: 1 });
 });
 

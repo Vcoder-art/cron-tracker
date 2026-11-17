@@ -5,5 +5,5 @@ const tracker = require('../src/tracker/CronTracker');
 
 (async () => {
   await connectDB('crash-child');
-  await tracker.run('sclass_mst', () => new Promise(() => {}), { trigger: 'external' });
+  await tracker.run('sclass_mst', () => new Promise(() => {}));
 })();

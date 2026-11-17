@@ -1,14 +1,15 @@
-// CronTracker: every job execution goes through run().
+// Runs one job and records what happened.
 //
-//   1. check enabled (T4)            -> skipped
-//   2. take the lock (T1)            -> skipped if someone else holds it
-//      (if the old holder's lease expired, its run is marked interrupted)
-//   3. insert run {running}
-//   4. heartbeat keeps the lease alive while jobFn works
-//   5. jobFn() -> {fetched, processed} or throw   -> success / warning / failed
-//   6. finish run, update job snapshot + release lock in ONE atomic update
+// The server crontab calls GET /api/accord-cron/:jobKey, which calls run(). Nothing else starts a job.
 //
-// Job contract: async (ctx) => ({ fetched, processed }). Throw on any failure.
+// What run() does, in order:
+//   1. Job disabled?                  -> save a "skipped" run, stop.
+//   2. Take the job's lock.           -> if another process holds it, save a "skipped" run, stop.
+//   3. Save a "running" run.
+//   4. Call the job function. While it works, keep extending the lock so nobody else takes it.
+//   5. Save the result (success / warning / failed) and release the lock.
+//
+// A job function looks like:  async (ctx) => ({ fetched, processed })   - it throws on failure.
 const os = require('os');
 const { mongoose } = require('../db');
 const CronJob = require('../models/CronJob');
@@ -16,167 +17,197 @@ const CronRun = require('../models/CronRun');
 const { prevSlot } = require('./schedule');
 const { TRACKER } = require('../config');
 
+// Who we are, written into the lock: "host:pid".
 const OWNER = `${os.hostname()}:${process.pid}`;
-const MAX_STACK = 2000;
 
-const log = (jobKey, ...args) => console.log(`[tracker:${jobKey}]`, ...args);
-const errInfo = (e) => ({
-  message: String(e && e.message ? e.message : e).slice(0, 500),
-  stack: String((e && e.stack) || '').slice(0, MAX_STACK),
-});
+const log = (jobKey, ...args) => console.log(`[${jobKey}]`, ...args);
 
-async function recordSkipped(job, base, reason) {
-  const run = await CronRun.create({ ...base, status: 'skipped', reason, finishedAt: base.startedAt, durationMs: 0 });
-  log(job.jobKey, `skipped: ${reason}`);
-  // T3: skipped runs are history only - lastRun keeps showing the real last result.
-  return { runId: run._id, status: 'skipped', reason };
+// ---------------------------------------------------------------------------------------------
+// Keep track of jobs running in this process, so the API can wait for them before it shuts down.
+// ---------------------------------------------------------------------------------------------
+const runningNow = new Set();
+
+function run(jobKey, jobFn) {
+  const promise = runTracked(jobKey, jobFn);
+  runningNow.add(promise);
+  promise.finally(() => runningNow.delete(promise)).catch(() => {});
+  return promise;
 }
 
-// A previous holder stopped heartbeating (crash / kill / restart). Close its run honestly.
+// Wait until every running job is done, but at most `timeoutMs`. Returns how many are still running.
+async function waitForRunningJobs(timeoutMs) {
+  if (runningNow.size === 0) return 0;
+  let timer;
+  const timeout = new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); });
+  await Promise.race([Promise.allSettled([...runningNow]), timeout]);
+  clearTimeout(timer);
+  return runningNow.size;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The main flow
+// ---------------------------------------------------------------------------------------------
+async function runTracked(jobKey, jobFn) {
+  const job = await CronJob.findOne({ jobKey }).lean();
+  if (!job) throw new Error(`Unknown job "${jobKey}" - is it in registry.js?`);
+
+  const startedAt = new Date();
+  const runId = new mongoose.Types.ObjectId();
+  const runDoc = {
+    _id: runId,
+    jobKey,
+    scheduledFor: prevSlot(job.schedules, job.timezone, startedAt), // the crontab time this call belongs to
+    startedAt,
+    host: os.hostname(),
+    pid: process.pid,
+  };
+
+  // 1. Disabled?
+  if (!job.enabled) return saveSkipped(runDoc, 'job is disabled');
+
+  // 2. Lock
+  const gotLock = await takeLock(jobKey, runId, startedAt);
+  if (!gotLock) {
+    const holder = (await CronJob.findOne({ jobKey }, { lock: 1 }).lean())?.lock;
+    return saveSkipped(runDoc, `already running (run ${holder?.runId} on ${holder?.owner})`);
+  }
+
+  // 3. Running
+  await CronRun.create({ ...runDoc, status: 'running' });
+  log(jobKey, `started run ${runId}`);
+
+  // 4. Do the work
+  const stopHeartbeat = startHeartbeat(jobKey, runId);
+  let result;
+  try {
+    const out = await jobFn({ runId, jobKey, scheduledFor: runDoc.scheduledFor, startedAt, log: (...a) => log(jobKey, ...a) });
+    const fetched = Number(out?.fetched) || 0;
+    const processed = Number(out?.processed) || 0;
+    result = fetched === 0
+      ? { status: 'warning', fetched, processed, reason: 'Accord returned 0 rows (file not ready?)' }
+      : { status: 'success', fetched, processed };
+  } catch (e) {
+    result = { status: 'failed', fetched: 0, processed: 0, error: errorInfo(e) };
+  } finally {
+    stopHeartbeat();
+  }
+
+  // 5. Save the result
+  const finishedAt = new Date();
+  const durationMs = finishedAt - startedAt;
+  await saveResult(jobKey, runId, startedAt, finishedAt, durationMs, result);
+
+  log(jobKey, `${result.status} in ${durationMs}ms, fetched=${result.fetched}, processed=${result.processed}`
+    + (result.error ? `, error=${result.error.message}` : ''));
+  return {
+    runId,
+    status: result.status,
+    durationMs,
+    recordsFetched: result.fetched,
+    recordsProcessed: result.processed,
+    error: result.error?.message,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Steps
+// ---------------------------------------------------------------------------------------------
+
+// A skipped run is history only: the job's lastRun keeps showing the last real result.
+async function saveSkipped(runDoc, reason) {
+  await CronRun.create({ ...runDoc, status: 'skipped', reason, finishedAt: runDoc.startedAt, durationMs: 0 });
+  log(runDoc.jobKey, `skipped: ${reason}`);
+  return { runId: runDoc._id, status: 'skipped', reason };
+}
+
+// The lock is free when it is null OR when it has expired (its owner crashed and stopped extending it).
+// Taking it is one atomic Mongo update, so two processes can never both get it.
+// Returns false if someone else holds it.
+async function takeLock(jobKey, runId, now) {
+  const expiresAt = new Date(now.getTime() + TRACKER.LEASE_MS);
+  const before = await CronJob.findOneAndUpdate(
+    { jobKey, $or: [{ lock: null }, { 'lock.expiresAt': { $lte: now } }] },
+    { $set: { lock: { runId, owner: OWNER, acquiredAt: now, expiresAt } } },
+    { new: false, timestamps: false } // new:false returns the document BEFORE the update -> we see the old lock
+  ).lean();
+
+  if (!before) return false;
+
+  // We took over an expired lock: the previous run died half way. Close it as "interrupted".
+  if (before.lock && before.lock.runId) await markInterrupted(jobKey, before.lock, now);
+  return true;
+}
+
 async function markInterrupted(jobKey, oldLock, now) {
-  const reason = `lease expired at ${oldLock.expiresAt.toISOString()} - owner ${oldLock.owner} stopped heartbeating`;
-  const res = await CronRun.findOneAndUpdate(
+  const reason = `process ${oldLock.owner} stopped responding (lock expired ${oldLock.expiresAt.toISOString()})`;
+  const deadRun = await CronRun.findOneAndUpdate(
     { _id: oldLock.runId, status: 'running' },
     { $set: { status: 'interrupted', reason, finishedAt: now } },
     { new: true }
   ).lean();
-  if (!res) return;
-  await CronJob.updateOne(
-    { jobKey },
-    {
-      $set: {
-        lastRun: {
-          runId: res._id, status: 'interrupted', trigger: res.trigger, startedAt: res.startedAt,
-          finishedAt: now, durationMs: null, recordsFetched: 0, recordsProcessed: 0, errorMessage: reason,
-        },
+  if (!deadRun) return;
+
+  await CronJob.updateOne({ jobKey }, {
+    $set: {
+      lastRun: {
+        runId: deadRun._id, status: 'interrupted', startedAt: deadRun.startedAt, finishedAt: now,
+        durationMs: null, recordsFetched: 0, recordsProcessed: 0, errorMessage: reason,
       },
-      $inc: { consecutiveFailures: 1 },
-    }
-  );
-  log(jobKey, `previous run ${res._id} marked interrupted`);
+    },
+    $inc: { consecutiveFailures: 1 },
+  });
+  log(jobKey, `previous run ${deadRun._id} marked interrupted`);
 }
 
-// Runs currently executing in THIS process - lets the worker/API wait for them on shutdown.
-const inFlight = new Set();
-
-function run(jobKey, jobFn, opts) {
-  const p = execute(jobKey, jobFn, opts);
-  inFlight.add(p);
-  p.finally(() => inFlight.delete(p)).catch(() => {});
-  return p;
-}
-
-// Resolves when every in-flight run finished, or after timeoutMs (returns how many were still running).
-async function waitForInFlight(timeoutMs) {
-  if (inFlight.size === 0) return 0;
-  let timer;
-  const timeout = new Promise((r) => { timer = setTimeout(r, timeoutMs); });
-  await Promise.race([Promise.allSettled([...inFlight]), timeout]);
-  clearTimeout(timer);
-  return inFlight.size;
-}
-
-async function execute(jobKey, jobFn, { trigger = 'manual', scheduledFor = null, attempt = 1 } = {}) {
-  const job = await CronJob.findOne({ jobKey }).lean();
-  if (!job) throw new Error(`Unknown job "${jobKey}" - is it in registry.js and synced?`);
-
-  const now = new Date();
-  const runId = new mongoose.Types.ObjectId();
-  if (!scheduledFor && trigger !== 'manual') scheduledFor = prevSlot(job.schedules, job.timezone, now);
-  const base = { _id: runId, jobKey, trigger, attempt, scheduledFor, startedAt: now, host: os.hostname(), pid: process.pid };
-
-  // ---- T4: automatic triggers respect enabled; manual always allowed ----
-  if (!job.enabled && trigger !== 'manual') return recordSkipped(job, base, 'job is disabled');
-
-  // ---- migration guard: once a job moved to the worker, a leftover crontab line must not run it twice ----
-  if (trigger === 'external' && job.scheduler === 'internal') {
-    return recordSkipped(job, base, 'job is scheduled by the worker - external trigger ignored (remove its crontab line)');
-  }
-
-  // ---- T1: atomic lock. Matches only if free or lease expired. ----
-  // T5: if Mongo is down this throws - correct, the job could not write its data anyway.
-  const before = await CronJob.findOneAndUpdate(
-    { jobKey, $or: [{ lock: null }, { 'lock.expiresAt': { $lte: now } }] },
-    { $set: { lock: { runId, owner: OWNER, acquiredAt: now, expiresAt: new Date(now.getTime() + TRACKER.LEASE_MS) } } },
-    { new: false, timestamps: false } // new:false -> we see the OLD lock, to detect a takeover
-  ).lean();
-
-  if (!before) {
-    const holder = (await CronJob.findOne({ jobKey }, { lock: 1 }).lean())?.lock;
-    return recordSkipped(job, base, `already running (run ${holder?.runId} on ${holder?.owner})`);
-  }
-  if (before.lock && before.lock.runId) await markInterrupted(jobKey, before.lock, now);
-
-  await CronRun.create({ ...base, status: 'running' });
-  log(jobKey, `started run ${runId} (${trigger})`);
-
-  // ---- heartbeat: keep the lease alive while the job works ----
-  const heartbeat = setInterval(async () => {
+// Every HEARTBEAT_MS push the lock's expiry forward, so a long job keeps its lock.
+// If this process dies, the heartbeat stops and the lock expires on its own.
+function startHeartbeat(jobKey, runId) {
+  const timer = setInterval(async () => {
     try {
-      const r = await CronJob.updateOne(
+      await CronJob.updateOne(
         { jobKey, 'lock.runId': runId },
         { $set: { 'lock.expiresAt': new Date(Date.now() + TRACKER.LEASE_MS) } },
         { timestamps: false }
       );
-      if (r.matchedCount === 0) log(jobKey, `WARNING: lost lock for run ${runId}`);
     } catch (e) {
       log(jobKey, 'heartbeat failed:', e.message);
     }
   }, TRACKER.HEARTBEAT_MS);
-  heartbeat.unref(); // never keeps the process alive on its own
-
-  // ---- run the job ----
-  let status, error = null, fetched = 0, processed = 0;
-  try {
-    const result = await jobFn({ runId, jobKey, scheduledFor, startedAt: now, attempt, log: (...a) => log(jobKey, ...a) });
-    fetched = Number(result?.fetched) || 0;
-    processed = Number(result?.processed) || 0;
-    status = fetched === 0 ? 'warning' : 'success';
-  } catch (e) {
-    status = 'failed';
-    error = errInfo(e);
-  } finally {
-    clearInterval(heartbeat);
-  }
-
-  const finishedAt = new Date();
-  const durationMs = finishedAt - now;
-  const reason = status === 'warning' ? 'Accord returned 0 rows (file not ready?)' : undefined;
-  const lastRun = {
-    runId, status, trigger, attempt, startedAt: now, finishedAt, durationMs,
-    recordsFetched: fetched, recordsProcessed: processed, errorMessage: error?.message || reason || null,
-  };
-
-  // ---- finish (T5: a failed write here is logged, never thrown) ----
-  try {
-    await CronRun.updateOne(
-      { _id: runId },
-      { $set: { status, finishedAt, durationMs, recordsFetched: fetched, recordsProcessed: processed, ...(error && { error }), ...(reason && { reason }) } }
-    );
-    // One atomic pipeline update: snapshot + counters + release lock only if it is still ours.
-    await CronJob.updateOne(
-      { jobKey },
-      [
-        {
-          $set: {
-            lastRun: { $literal: lastRun }, // $literal: error text may contain "$"
-            lastSuccessAt: status === 'success' ? finishedAt : '$lastSuccessAt',
-            consecutiveFailures:
-              status === 'success' ? 0
-              : status === 'failed' ? { $add: [{ $ifNull: ['$consecutiveFailures', 0] }, 1] }
-              : '$consecutiveFailures', // warning: unchanged
-            lock: { $cond: [{ $eq: ['$lock.runId', runId] }, null, '$lock'] },
-          },
-        },
-      ],
-      { timestamps: false }
-    );
-  } catch (e) {
-    log(jobKey, `could not record finish of run ${runId}: ${e.message} (lease will expire on its own)`);
-  }
-
-  log(jobKey, `${status} in ${durationMs}ms fetched=${fetched} processed=${processed}${error ? ' error=' + error.message : ''}`);
-  return { runId, status, durationMs, recordsFetched: fetched, recordsProcessed: processed, error: error?.message };
+  timer.unref(); // the timer alone must not keep the process alive
+  return () => clearInterval(timer);
 }
 
-module.exports = { run, waitForInFlight, OWNER };
+// Update the run, then update the job (lastRun, counters, release lock).
+// Never throws: if Mongo is down here, the lock simply expires on its own.
+async function saveResult(jobKey, runId, startedAt, finishedAt, durationMs, { status, fetched, processed, reason, error }) {
+  try {
+    await CronRun.updateOne({ _id: runId }, {
+      $set: { status, finishedAt, durationMs, recordsFetched: fetched, recordsProcessed: processed, reason, error },
+    });
+
+    const lastRun = {
+      runId, status, startedAt, finishedAt, durationMs,
+      recordsFetched: fetched, recordsProcessed: processed,
+      errorMessage: error?.message || reason || null,
+    };
+    let jobUpdate;
+    if (status === 'success') jobUpdate = { $set: { lastRun, lastSuccessAt: finishedAt, consecutiveFailures: 0 } };
+    else if (status === 'failed') jobUpdate = { $set: { lastRun }, $inc: { consecutiveFailures: 1 } };
+    else jobUpdate = { $set: { lastRun } }; // warning: failure counter unchanged
+    await CronJob.updateOne({ jobKey }, jobUpdate, { timestamps: false });
+
+    // Release the lock - but only if it is still ours.
+    await CronJob.updateOne({ jobKey, 'lock.runId': runId }, { $set: { lock: null } }, { timestamps: false });
+  } catch (e) {
+    log(jobKey, `could not save result of run ${runId}: ${e.message}`);
+  }
+}
+
+function errorInfo(e) {
+  return {
+    message: String(e?.message || e).slice(0, 500),
+    stack: String(e?.stack || '').slice(0, 2000),
+  };
+}
+
+module.exports = { run, waitForRunningJobs, OWNER };
