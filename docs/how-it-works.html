@@ -1,0 +1,465 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Accord Cron Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  /* Layout: one reading column, wide diagram and tables scroll inside their own boxes. */
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --fg: #1b2230;
+    --muted: #5d6779;
+    --line: #dde1e8;
+    --accent: #2b55c4;
+    --accent-soft: #e6ecfb;
+    --ok: #16794a; --ok-bg: #e5f5ec;
+    --warn: #935d00; --warn-bg: #fdf1d8;
+    --bad: #b42318; --bad-bg: #fce8e6;
+    --off: #5d6779; --off-bg: #eceef2;
+    --code-bg: #eef1f6;
+    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #11151c; --panel: #181e28; --fg: #e5e9f0; --muted: #98a2b4; --line: #2a3242;
+      --accent: #85a5ff; --accent-soft: #1d2a4a;
+      --ok: #5fd39a; --ok-bg: #143224; --warn: #f2c14e; --warn-bg: #3a2e10; --bad: #ff8a80; --bad-bg: #3d1a17;
+      --off: #98a2b4; --off-bg: #232a36; --code-bg: #1f2633;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #11151c; --panel: #181e28; --fg: #e5e9f0; --muted: #98a2b4; --line: #2a3242;
+    --accent: #85a5ff; --accent-soft: #1d2a4a;
+    --ok: #5fd39a; --ok-bg: #143224; --warn: #f2c14e; --warn-bg: #3a2e10; --bad: #ff8a80; --bad-bg: #3d1a17;
+    --off: #98a2b4; --off-bg: #232a36; --code-bg: #1f2633;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.6 var(--font-body);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 40px 80px;
+  }
+  main { max-width: 860px; margin: 0 auto; display: grid; gap: 56px; }
+  section { display: grid; gap: 16px; min-width: 0; }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.25; margin: 0; }
+  h1 { font-size: 34px; font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 24px; font-weight: 650; }
+  h3 { font-size: 17px; font-weight: 600; }
+  p { margin: 0; max-width: 68ch; }
+  .lead { font-size: 18px; color: var(--muted); }
+  .eyebrow { font: 500 12px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  code, .mono { font-family: var(--font-mono); font-size: .88em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre {
+    margin: 0; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font: 13.5px/1.55 var(--font-mono);
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  a { color: var(--accent); }
+
+  /* header */
+  .intro { display: grid; gap: 14px; }
+  .oneline {
+    border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; font-size: 17px; max-width: 68ch;
+  }
+
+  /* diagram */
+  .diagram { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; overflow-x: auto; }
+  .diagram svg { display: block; min-width: 720px; width: 100%; height: auto; }
+  .diagram .box { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
+  .diagram .box.hot { fill: var(--accent-soft); stroke: var(--accent); }
+  .diagram .db { fill: var(--code-bg); stroke: var(--line); stroke-width: 1.5; }
+  .diagram .t1 { fill: var(--fg); font: 600 14px var(--font-body); }
+  .diagram .t2 { fill: var(--muted); font: 12px var(--font-mono); }
+  .diagram .lbl { fill: var(--muted); font: 12px var(--font-body); }
+  .diagram .arrow { stroke: var(--accent); stroke-width: 1.8; fill: none; }
+  .diagram .arrow.read { stroke: var(--muted); stroke-dasharray: 5 4; }
+  .diagram .head { fill: var(--accent); }
+  .diagram .head.read { fill: var(--muted); }
+  .caption { font-size: 14px; color: var(--muted); }
+
+  /* file map */
+  .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .group { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .group h3 { font-size: 13px; font-family: var(--font-mono); font-weight: 500; color: var(--accent); letter-spacing: .02em; }
+  .file { display: grid; gap: 2px; }
+  .file .name { font: 500 13.5px var(--font-mono); word-break: break-word; }
+  .file .what { font-size: 14px; color: var(--muted); line-height: 1.45; }
+
+  /* steps */
+  ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; counter-reset: s; }
+  ol.steps > li {
+    counter-increment: s; display: grid; grid-template-columns: 36px 1fr; gap: 14px;
+    padding: 14px 0; border-top: 1px solid var(--line); min-width: 0;
+  }
+  ol.steps > li:first-child { border-top: 0; }
+  ol.steps > li::before {
+    content: counter(s); width: 28px; height: 28px; border-radius: 50%;
+    display: grid; place-items: center; font: 600 13px var(--font-mono);
+    background: var(--accent-soft); color: var(--accent);
+  }
+  ol.steps .body { display: grid; gap: 6px; min-width: 0; }
+  ol.steps .where { font: 12px var(--font-mono); color: var(--muted); }
+
+  /* tables */
+  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font: 600 12px var(--font-mono); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  td code { white-space: nowrap; }
+
+  .chip { display: inline-block; padding: 1px 9px; border-radius: 999px; font: 600 12.5px var(--font-mono); white-space: nowrap; }
+  .s-ok { color: var(--ok); background: var(--ok-bg); }
+  .s-warn { color: var(--warn); background: var(--warn-bg); }
+  .s-bad { color: var(--bad); background: var(--bad-bg); }
+  .s-off { color: var(--off); background: var(--off-bg); }
+
+  /* two-up cards */
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+  .card p { font-size: 15px; }
+
+  /* timeline for the lock */
+  .timeline { display: grid; gap: 0; }
+  .tl { display: grid; grid-template-columns: 74px 1fr; gap: 14px; padding: 9px 0; border-top: 1px dashed var(--line); }
+  .tl:first-child { border-top: 0; }
+  .tl .time { font: 500 13px var(--font-mono); color: var(--accent); font-variant-numeric: tabular-nums; }
+  .tl p { font-size: 15px; }
+
+  .note { background: var(--accent-soft); border-radius: 10px; padding: 14px 16px; font-size: 15px; }
+  .note strong { color: var(--accent); }
+
+  @media (max-width: 520px) {
+    h1 { font-size: 28px; }
+    h2 { font-size: 21px; }
+    body { padding-block: 24px 56px; }
+  }
+</style>
+</head><body>
+
+<main>
+
+  <header class="intro">
+    <div class="eyebrow">accord-cron-lab · how the pieces fit</div>
+    <h1>Accord Cron Map</h1>
+    <p class="lead">A walk through the whole system: who starts a job, what runs, where the result is stored, and how the dashboard decides whether something is wrong.</p>
+    <p class="oneline">The server crontab calls a URL. The API runs that job, writes down what happened in Mongo, and the dashboard reads those notes.</p>
+  </header>
+
+  <!-- 1. Big picture -->
+  <section>
+    <div class="eyebrow">The big picture</div>
+    <h2>One crontab call, end to end</h2>
+    <div class="diagram" role="img" aria-label="Flow: crontab calls the API route, which calls the tracker, which runs the job. The job downloads from Accord and writes to Mongo. The tracker writes cron_jobs and cron_runs. The dashboard reads them through the API.">
+      <svg viewBox="0 0 820 400" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head read" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+
+        <!-- row 1 -->
+        <rect class="box" x="10" y="30" width="160" height="70" rx="10"/>
+        <text class="t1" x="90" y="60" text-anchor="middle">Server crontab</text>
+        <text class="t2" x="90" y="80" text-anchor="middle">curl at 10:01</text>
+
+        <rect class="box" x="230" y="30" width="170" height="70" rx="10"/>
+        <text class="t1" x="315" y="60" text-anchor="middle">API route</text>
+        <text class="t2" x="315" y="80" text-anchor="middle">routes.js</text>
+
+        <rect class="box hot" x="460" y="30" width="170" height="70" rx="10"/>
+        <text class="t1" x="545" y="60" text-anchor="middle">Tracker</text>
+        <text class="t2" x="545" y="80" text-anchor="middle">CronTracker.js</text>
+
+        <rect class="box" x="660" y="150" width="150" height="70" rx="10"/>
+        <text class="t1" x="735" y="180" text-anchor="middle">Accord</text>
+        <text class="t2" x="735" y="200" text-anchor="middle">GetTxtFile</text>
+
+        <rect class="box" x="460" y="150" width="170" height="70" rx="10"/>
+        <text class="t1" x="545" y="180" text-anchor="middle">Job function</text>
+        <text class="t2" x="545" y="200" text-anchor="middle">defineAccordJob.js</text>
+
+        <!-- mongo -->
+        <rect class="db" x="230" y="270" width="580" height="110" rx="12"/>
+        <text class="lbl" x="246" y="292">MongoDB</text>
+        <rect class="box" x="246" y="304" width="170" height="60" rx="8"/>
+        <text class="t1" x="331" y="330" text-anchor="middle">cron_jobs</text>
+        <text class="t2" x="331" y="349" text-anchor="middle">lock · lastRun</text>
+        <rect class="box" x="430" y="304" width="170" height="60" rx="8"/>
+        <text class="t1" x="515" y="330" text-anchor="middle">cron_runs</text>
+        <text class="t2" x="515" y="349" text-anchor="middle">one per call</text>
+        <rect class="box" x="614" y="304" width="180" height="60" rx="8"/>
+        <text class="t1" x="704" y="330" text-anchor="middle">feed collections</text>
+        <text class="t2" x="704" y="349" text-anchor="middle">current_nav, ...</text>
+
+        <!-- dashboard -->
+        <rect class="box" x="10" y="270" width="160" height="70" rx="10"/>
+        <text class="t1" x="90" y="300" text-anchor="middle">Dashboard</text>
+        <text class="t2" x="90" y="320" text-anchor="middle">every 15 s</text>
+
+        <!-- arrows -->
+        <path class="arrow" d="M170,65 L226,65" marker-end="url(#ah)"/>
+        <text class="lbl" x="198" y="56" text-anchor="middle">1</text>
+        <path class="arrow" d="M400,65 L456,65" marker-end="url(#ah)"/>
+        <text class="lbl" x="428" y="56" text-anchor="middle">2</text>
+        <path class="arrow" d="M545,100 L545,146" marker-end="url(#ah)"/>
+        <text class="lbl" x="556" y="128">3</text>
+        <path class="arrow" d="M630,185 L656,185" marker-end="url(#ah)"/>
+        <text class="lbl" x="643" y="176" text-anchor="middle">4</text>
+        <path class="arrow" d="M600,220 L680,300" marker-end="url(#ah)"/>
+        <text class="lbl" x="650" y="252">5</text>
+        <path class="arrow" d="M470,100 L420,300" marker-end="url(#ah)"/>
+        <text class="lbl" x="404" y="200">6</text>
+
+        <path class="arrow read" d="M230,330 L174,312" marker-end="url(#ahr)"/>
+        <text class="lbl" x="200" y="350" text-anchor="middle">reads</text>
+      </svg>
+    </div>
+    <p class="caption">1 crontab calls the URL · 2 the route hands the job to the tracker · 3 the tracker calls the job function · 4 the job downloads the Accord file · 5 it writes the rows to the feed collection · 6 the tracker records the run in <code>cron_runs</code> and <code>cron_jobs</code>. The dashboard only ever reads.</p>
+  </section>
+
+  <!-- 2. Files -->
+  <section>
+    <div class="eyebrow">The pieces</div>
+    <h2>Which file does what</h2>
+    <div class="files">
+      <div class="group">
+        <h3>src/api/</h3>
+        <div class="file"><span class="name">server.js</span><span class="what">Starts Express, syncs the job list into Mongo, serves the dashboard. Waits for running jobs on shutdown.</span></div>
+        <div class="file"><span class="name">routes.js</span><span class="what">The crontab URL (the only way a job starts) and the two read-only dashboard URLs.</span></div>
+      </div>
+      <div class="group">
+        <h3>src/tracker/</h3>
+        <div class="file"><span class="name">CronTracker.js</span><span class="what">Wraps every job: lock, "running" record, heartbeat, result, release.</span></div>
+        <div class="file"><span class="name">schedule.js</span><span class="what">Cron maths: the last schedule time that passed, and the next one coming.</span></div>
+      </div>
+      <div class="group">
+        <h3>src/jobs/</h3>
+        <div class="file"><span class="name">registry.js</span><span class="what">The list of jobs: key, name, schedules, limits, and which function to run.</span></div>
+        <div class="file"><span class="name">accordJobs.js</span><span class="what">The actual job functions, mostly a few settings each.</span></div>
+        <div class="file"><span class="name">defineAccordJob.js</span><span class="what">Builds a job for the usual pattern: download, stage, merge, count, clean.</span></div>
+        <div class="file"><span class="name">syncRegistry.js</span><span class="what">Copies registry.js into the <code>cron_jobs</code> collection on start.</span></div>
+      </div>
+      <div class="group">
+        <h3>src/models/</h3>
+        <div class="file"><span class="name">CronJob.js</span><span class="what"><code>cron_jobs</code>: one document per job.</span></div>
+        <div class="file"><span class="name">CronRun.js</span><span class="what"><code>cron_runs</code>: one document per crontab call, kept 90 days.</span></div>
+        <div class="file"><span class="name">accordFeeds.js</span><span class="what">The Accord data collections and their staging ("dump") twins.</span></div>
+      </div>
+      <div class="group">
+        <h3>src/health/ · public/</h3>
+        <div class="file"><span class="name">status.js</span><span class="what">Rules that turn a job document into healthy / delayed / failing.</span></div>
+        <div class="file"><span class="name">dashboard.html</span><span class="what">The page. Polls the health URL and shows the run history.</span></div>
+      </div>
+      <div class="group">
+        <h3>lab helpers</h3>
+        <div class="file"><span class="name">mock-accord/server.js</span><span class="what">Fake Accord. Can be told to fail, return empty files or go slow.</span></div>
+        <div class="file"><span class="name">scripts/e2e.js</span><span class="what">Starts everything and checks the real flow.</span></div>
+        <div class="file"><span class="name">scripts/demo-tracker.js</span><span class="what">Shows locking, overlap and crash recovery in the terminal.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Step by step -->
+  <section>
+    <div class="eyebrow">Follow one call</div>
+    <h2>What happens when the crontab fires at 10:01</h2>
+    <p>The crontab line on the server looks like this:</p>
+    <pre><code>1 10 * * *  curl -s -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:4000/api/accord-cron/current_nav</code></pre>
+
+    <ol class="steps">
+      <li><div class="body">
+        <h3>The route checks the secret and finds the job</h3>
+        <span class="where">routes.js</span>
+        <p>Wrong secret: <code>401</code>. Unknown job key: <code>404</code>. Otherwise it starts the job and answers <code>202 Accepted</code> at once, so curl never waits on a long job.</p>
+      </div></li>
+      <li><div class="body">
+        <h3>The tracker works out which schedule time this call belongs to</h3>
+        <span class="where">CronTracker.js → schedule.js prevSlot()</span>
+        <p>The call arrived at 10:01:03, so it belongs to the <strong>10:01</strong> slot. That goes into the run as <code>scheduledFor</code>.</p>
+      </div></li>
+      <li><div class="body">
+        <h3>Is the job switched off?</h3>
+        <p>If <code>enabled</code> is false, it saves a <span class="chip s-off">skipped</span> run with the reason "job is disabled" and stops.</p>
+      </div></li>
+      <li><div class="body">
+        <h3>Take the lock</h3>
+        <span class="where">takeLock()</span>
+        <p>One atomic update on the job document: "set the lock to me, but only if it is empty or expired". If another process holds it, this call saves a <span class="chip s-off">skipped</span> run ("already running") and stops. Two calls can never run the same job at once.</p>
+      </div></li>
+      <li><div class="body">
+        <h3>Save a "running" record</h3>
+        <p>A new document in <code>cron_runs</code> with status <span class="chip s-warn">running</span>. From now on the dashboard can see it.</p>
+      </div></li>
+      <li><div class="body">
+        <h3>Run the job, keep the lock alive</h3>
+        <span class="where">startHeartbeat() + the job function</span>
+        <p>While the job works, a timer pushes the lock's expiry 2 minutes forward every 30 seconds. The job returns <code>{ fetched, processed }</code> or throws.</p>
+      </div></li>
+      <li><div class="body">
+        <h3>Decide the result</h3>
+        <p>Threw an error → <span class="chip s-bad">failed</span>. Accord gave 0 rows → <span class="chip s-warn">warning</span>. Otherwise → <span class="chip s-ok">success</span>.</p>
+      </div></li>
+      <li><div class="body">
+        <h3>Save the result and release the lock</h3>
+        <span class="where">saveResult()</span>
+        <p>Updates the run in <code>cron_runs</code>. Updates the job in <code>cron_jobs</code>: <code>lastRun</code>, <code>lastSuccessAt</code>, and <code>consecutiveFailures</code> (reset on success, +1 on failure). Then clears the lock if it is still ours.</p>
+      </div></li>
+    </ol>
+  </section>
+
+  <!-- 4. Inside a job -->
+  <section>
+    <div class="eyebrow">Inside a job</div>
+    <h2>What an Accord job does</h2>
+    <p>Most jobs are made by <code>defineAccordJob()</code>. You give it a few settings and it returns the function the tracker calls.</p>
+    <pre><code>const currentNav = defineAccordJob({
+  file: 'Currentnav',          // which Accord file
+  section: 'MFNav',            // which Accord section
+  dump: m.CurrentNavDump,      // staging collection
+  target: m.CurrentNav,        // real collection
+  mergeOn: 'schemecode',       // key used to match rows
+  project: { schemecode: 1, navdate: ..., navrs: 1, prevnav: 1 },
+});</code></pre>
+    <ol class="steps">
+      <li><div class="body"><h3>Download</h3><p>GET Accord's <code>/RawData/GetTxtFile</code> with today's India date as <code>DDMMYYYY</code>. Times out after 60 s. Any HTTP or network error becomes one readable message, such as <code>Accord Currentnav: HTTP 500</code>.</p></div></li>
+      <li><div class="body"><h3>Stage</h3><p>Insert every row into the dump collection, tagged with this run's <code>runId</code>.</p></div></li>
+      <li><div class="body"><h3>Merge</h3><p>A Mongo <code>$merge</code> copies only this run's rows into the real collection: replace if the key exists, insert if not. Each row gets <code>cronRunId</code> and <code>crondate</code>.</p></div></li>
+      <li><div class="body"><h3>Count</h3><p>Count rows in the real collection with this <code>cronRunId</code>. That number is <code>processed</code>.</p></div></li>
+      <li><div class="body"><h3>Clean up</h3><p>Delete this run's staging rows, even when an earlier step failed. If the process crashes first, a 24-hour TTL index removes them.</p></div></li>
+    </ol>
+    <p>A job that does not fit this pattern (like <code>navSanityCheck</code>) is just a normal <code>async</code> function that returns <code>{ fetched, processed }</code> and throws on failure.</p>
+  </section>
+
+  <!-- 5. Lock -->
+  <section>
+    <div class="eyebrow">The lock</div>
+    <h2>Why the lock expires, and what happens on a crash</h2>
+    <p>The lock lives on the job document: <code>{ runId, owner: "host:pid", acquiredAt, expiresAt }</code>. It expires on purpose. A lock that never expired would stay stuck forever after a crash.</p>
+    <div class="two">
+      <div class="card">
+        <h3>Normal run</h3>
+        <div class="timeline">
+          <div class="tl"><span class="time">10:01:00</span><p>Lock taken, expires 10:03:00</p></div>
+          <div class="tl"><span class="time">10:01:30</span><p>Heartbeat → expires 10:03:30</p></div>
+          <div class="tl"><span class="time">10:02:00</span><p>Heartbeat → expires 10:04:00</p></div>
+          <div class="tl"><span class="time">10:02:10</span><p>Job done, lock cleared</p></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Process crashes</h3>
+        <div class="timeline">
+          <div class="tl"><span class="time">10:01:00</span><p>Lock taken, expires 10:03:00</p></div>
+          <div class="tl"><span class="time">10:01:20</span><p>Server restarts. No more heartbeats</p></div>
+          <div class="tl"><span class="time">10:03:00</span><p>Lock expires. Dashboard shows <span class="chip s-bad">failing</span>: "stopped responding"</p></div>
+          <div class="tl"><span class="time">next call</span><p>Takes the expired lock, marks the old run <span class="chip s-bad">interrupted</span>, then runs normally</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. Data -->
+  <section>
+    <div class="eyebrow">What is stored</div>
+    <h2>The two tracking collections</h2>
+    <div class="two">
+      <div class="card">
+        <h3><code>cron_jobs</code>: one per job</h3>
+        <p><strong>From registry.js</strong> (overwritten on every start): <code>jobKey</code>, <code>name</code>, <code>schedules</code>, <code>timezone</code>, <code>enabled</code>, <code>criticality</code>, <code>graceMin</code>, <code>maxDurationMin</code>.</p>
+        <p><strong>Written by the tracker</strong>: <code>lock</code>, <code>lastRun</code> (a short copy of the newest run), <code>lastSuccessAt</code>, <code>consecutiveFailures</code>.</p>
+        <p>The dashboard reads only this collection for its main table, so it stays fast however much history piles up.</p>
+      </div>
+      <div class="card">
+        <h3><code>cron_runs</code>: one per call</h3>
+        <p><code>jobKey</code>, <code>status</code>, <code>scheduledFor</code>, <code>startedAt</code>, <code>finishedAt</code>, <code>durationMs</code>, <code>recordsFetched</code>, <code>recordsProcessed</code>, <code>reason</code>, <code>error</code>, <code>host</code>, <code>pid</code>.</p>
+        <p>Used for the History panel. Mongo deletes runs older than 90 days by itself.</p>
+      </div>
+    </div>
+
+    <h3>Run statuses</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><span class="chip s-warn">running</span></td><td>Started, not finished yet.</td></tr>
+          <tr><td><span class="chip s-ok">success</span></td><td>Finished and Accord returned rows.</td></tr>
+          <tr><td><span class="chip s-warn">warning</span></td><td>Finished, but Accord returned 0 rows. Usually the file is not ready yet.</td></tr>
+          <tr><td><span class="chip s-bad">failed</span></td><td>The job threw an error. The message is saved.</td></tr>
+          <tr><td><span class="chip s-off">skipped</span></td><td>Did nothing: the job is disabled, or it was already running.</td></tr>
+          <tr><td><span class="chip s-bad">interrupted</span></td><td>The process died while this run was going. Found by the next call.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 7. Health -->
+  <section>
+    <div class="eyebrow">The dashboard</div>
+    <h2>How a job gets its colour</h2>
+    <p>Every 15 seconds the page calls <code>GET /api/health/crons</code>. For each job, <code>status.js</code> checks three things and the worst problem wins.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Check</th><th>Problem found</th><th>Job becomes</th></tr></thead>
+        <tbody>
+          <tr><td>Is it running now?</td><td>Lock expired: the process died</td><td><span class="chip s-bad">failing</span></td></tr>
+          <tr><td></td><td>Running longer than <code>maxDurationMin</code></td><td><span class="chip s-warn">delayed</span></td></tr>
+          <tr><td>How did the last run end?</td><td>failed or interrupted</td><td><span class="chip s-bad">failing</span></td></tr>
+          <tr><td></td><td>warning (0 rows)</td><td><span class="chip s-warn">delayed</span></td></tr>
+          <tr><td>Did the crontab miss a call?</td><td>A schedule time passed its <code>graceMin</code> with no run</td><td><span class="chip s-warn">delayed</span></td></tr>
+          <tr><td colspan="2">None of the above</td><td><span class="chip s-ok">healthy</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>The "missed call" check, with numbers</h3>
+      <p>Current NAV runs at 07:31, 10:01, 12:31… with <code>graceMin: 15</code>. At <strong>10:30</strong>, the check looks 15 minutes back, to 10:15. The last schedule time before 10:15 is <strong>10:01</strong>. Did a run start at or after 09:59 (2 minutes of clock slack)? If not, the job shows "missed run due 16 Nov, 10:01 (crontab did not call it)".</p>
+      <p>Schedule times from before the job was first synced are never blamed.</p>
+    </div>
+
+    <p><strong>Overall</strong> is <span class="chip s-bad">failing</span> if any <em>critical</em> job is failing, <span class="chip s-warn">delayed</span> if any job is failing or delayed, otherwise <span class="chip s-ok">healthy</span>. Disabled jobs are not checked.</p>
+  </section>
+
+  <!-- 8. Startup -->
+  <section>
+    <div class="eyebrow">Start-up</div>
+    <h2>What happens when the API starts</h2>
+    <ol class="steps">
+      <li><div class="body"><h3>Connect to Mongo</h3></div></li>
+      <li><div class="body"><h3>Check registry.js</h3><p>Every job needs a key, a handler function and valid cron expressions. One mistake stops the start, so a typo never half-applies.</p></div></li>
+      <li><div class="body"><h3>Create indexes</h3><p>Unique <code>jobKey</code>, the 90-day TTL on runs, the 24-hour TTL on staging rows, and the unique keys <code>$merge</code> needs.</p></div></li>
+      <li><div class="body"><h3>Copy job definitions into <code>cron_jobs</code></h3><p>Only the definition fields are touched. The lock, last run and counters stay as they were. A job removed from registry.js is disabled and hidden, not deleted, so its history stays.</p></div></li>
+      <li><div class="body"><h3>Listen on port 4000</h3><p>Now the crontab URLs and the dashboard work.</p></div></li>
+    </ol>
+  </section>
+
+  <!-- 9. Add a job -->
+  <section>
+    <div class="eyebrow">Doing it yourself</div>
+    <h2>Adding a new job</h2>
+    <ol class="steps">
+      <li><div class="body"><h3>Add its collections</h3><span class="where">src/models/accordFeeds.js</span><p>A dump model and a target model with a unique key field.</p></div></li>
+      <li><div class="body"><h3>Write the job</h3><span class="where">src/jobs/accordJobs.js</span><p>Usually one <code>defineAccordJob({ ... })</code> call.</p></div></li>
+      <li><div class="body"><h3>Register it</h3><span class="where">src/jobs/registry.js</span><pre><code>{
+  jobKey: 'scheme_master',
+  name: 'Scheme Master',
+  schedules: ['30 23 * * *'],
+  criticality: 'normal',
+  graceMin: 30,
+  maxDurationMin: 5,
+  handler: jobs.schemeMaster,
+}</code></pre></div></li>
+      <li><div class="body"><h3>Add the crontab line</h3><p>Same time as <code>schedules</code>, otherwise the dashboard reports missed calls.</p><pre><code>30 23 * * *  curl -s -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:4000/api/accord-cron/scheme_master</code></pre></div></li>
+      <li><div class="body"><h3>Restart the API</h3><p>The new job appears on the dashboard as "waiting for first run".</p></div></li>
+    </ol>
+    <p class="note"><strong>Remember:</strong> the code never schedules anything. If the crontab line is missing, the job never runs, and the dashboard tells you after the grace period.</p>
+  </section>
+
+</main>
+</body></html>
