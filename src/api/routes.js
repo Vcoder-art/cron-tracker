@@ -1,62 +1,100 @@
 const express = require('express');
-const { runJob, hasJob } = require('../jobs/runJob');
-const { getCronHealth, getRuns } = require('../health/service');
+const registry = require('../jobs/registry');
+const tracker = require('../tracker/CronTracker');
+const CronJob = require('../models/CronJob');
+const CronRun = require('../models/CronRun');
+const { computeJobHealth, summarize } = require('../health/status');
 const { ADMIN_TOKEN, CRON_TRIGGER_SECRET } = require('../config');
 
 const router = express.Router();
 
-// ---- auth ----
-// Lab stand-in for the WMS admin auth middleware. In the main app use the existing one.
+// ---------------------------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------------------------
+
+// Dashboard users. (In the main app use the existing WMS admin middleware instead.)
 function requireAdmin(req, res, next) {
   const token = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
   if (!ADMIN_TOKEN || token !== ADMIN_TOKEN) return res.status(401).json({ error: 'unauthorized' });
   next();
 }
-// The crontab must send x-cron-secret. Replaces today's fully public trigger URLs.
+
+// The server crontab sends the x-cron-secret header.
 function requireCronSecret(req, res, next) {
-  if (CRON_TRIGGER_SECRET && req.get('x-cron-secret') !== CRON_TRIGGER_SECRET) return res.status(401).json({ error: 'bad cron secret' });
+  if (CRON_TRIGGER_SECRET && req.get('x-cron-secret') !== CRON_TRIGGER_SECRET) {
+    return res.status(401).json({ error: 'bad cron secret' });
+  }
   next();
 }
 
-// Start a run. Default: answer 202 immediately (no nginx/curl timeout on long jobs);
-// ?wait=1 waits for the result (handy for testing and manual curl).
-async function trigger(req, res, triggerName) {
+// ---------------------------------------------------------------------------------------------
+// GET /api/accord-cron/:jobKey  - called by the server crontab. The ONLY way a job runs.
+//
+// Answers 202 straight away so curl/nginx never time out on a long job.
+// Add ?wait=1 to wait for the result instead (used by tests).
+// ---------------------------------------------------------------------------------------------
+router.get('/accord-cron/:jobKey', requireCronSecret, async (req, res) => {
   const { jobKey } = req.params;
-  if (!hasJob(jobKey)) return res.status(404).json({ error: `unknown job ${jobKey}` });
+  const def = registry.find((d) => d.jobKey === jobKey);
+  if (!def) return res.status(404).json({ error: `unknown job ${jobKey}` });
 
-  const p = runJob(jobKey, { trigger: triggerName });
+  const running = tracker.run(jobKey, def.handler);
+
   if (req.query.wait === '1') {
     try {
-      return res.json(await p);
+      return res.json(await running);
     } catch (e) {
       return res.status(500).json({ error: e.message });
     }
   }
-  p.catch((e) => console.error(`[api] ${jobKey} ${triggerName} run error:`, e.message));
-  return res.status(202).json({ accepted: true, jobKey, trigger: triggerName });
-}
 
-// ---- what the server crontab calls (replaces GET /api/accord-cron/accordcurrent_nav etc.) ----
-router.get('/accord-cron/:jobKey', requireCronSecret, (req, res) => trigger(req, res, 'external'));
+  running.catch((e) => console.error(`[api] ${jobKey} could not run:`, e.message));
+  res.status(202).json({ accepted: true, jobKey });
+});
 
-// ---- dashboard API ----
+// ---------------------------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------------------------
+
+// Health of every job + an overall status. Worst jobs first.
+const SORT_ORDER = { failing: 0, delayed: 1, healthy: 2, disabled: 3 };
+
 router.get('/health/crons', requireAdmin, async (req, res) => {
   try {
-    res.json(await getCronHealth());
+    const now = new Date();
+    const jobs = await CronJob.find({ inRegistry: true }).lean();
+    const healths = jobs
+      .map((job) => computeJobHealth(job, now))
+      .sort((a, b) => SORT_ORDER[a.status] - SORT_ORDER[b.status] || a.name.localeCompare(b.name));
+    res.json({ checkedAt: now, ...summarize(healths), jobs: healths });
   } catch (e) {
-    // Always answer: a broken health endpoint must not look like "no data"
+    // Never answer "no data" when the check itself broke.
     res.status(500).json({ overall: 'failing', reasons: [`health check error: ${e.message}`], jobs: [] });
   }
 });
 
+// "Run now" button on the dashboard. Same run as a crontab call (same lock, same history),
+// but needs the admin token instead of the cron secret, and is recorded as trigger: 'manual'.
+// Answers 202 straight away; the dashboard picks up the result on its next refresh.
+router.post('/health/crons/:jobKey/run', requireAdmin, (req, res) => {
+  const { jobKey } = req.params;
+  const def = registry.find((d) => d.jobKey === jobKey);
+  if (!def) return res.status(404).json({ error: `unknown job ${jobKey}` });
+
+  tracker.run(jobKey, def.handler, { trigger: 'manual' })
+    .catch((e) => console.error(`[api] ${jobKey} could not run:`, e.message));
+  res.status(202).json({ accepted: true, jobKey });
+});
+
+// Last N runs of one job (default 20, max 100).
 router.get('/health/crons/:jobKey/runs', requireAdmin, async (req, res) => {
   try {
-    res.json(await getRuns(req.params.jobKey, req.query.limit));
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const runs = await CronRun.find({ jobKey: req.params.jobKey }).sort({ startedAt: -1 }).limit(limit).lean();
+    res.json(runs);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
-
-router.post('/health/crons/:jobKey/run', requireAdmin, (req, res) => trigger(req, res, 'manual'));
 
 module.exports = router;

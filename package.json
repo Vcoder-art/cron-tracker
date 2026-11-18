@@ -9,8 +9,8 @@
     "sync": "node scripts/sync.js",
     "demo:tracker": "node scripts/demo-tracker.js",
     "api": "node src/api/server.js",
-    "worker": "node src/worker/worker.js",
-    "e2e": "node scripts/e2e.js"
+    "e2e": "node scripts/e2e.js",
+    "test:mail": "node scripts/test-mail.js"
   },
   "keywords": [],
   "author": "",
@@ -22,6 +22,6 @@
     "dotenv": "^18.0.10",
     "express": "^4.22.3",
     "mongoose": "^6.13.12",
-    "node-cron": "^4.6.0"
+    "nodemailer": "^6.10.1"
   }
 }

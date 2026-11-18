@@ -1,5 +1,5 @@
-// `npm run e2e` - full system test with real processes: mock Accord + API + worker.
-// Takes ~3-4 minutes because it waits for the worker's real */2 schedule and a 1-min retry.
+// `npm run e2e` - full system test with real processes: mock Accord + API.
+// Every run goes through the crontab URL (GET /api/accord-cron/:jobKey) - the only way a job starts.
 // Process logs go to e2e.log; this script prints only the checks.
 const fs = require('fs');
 const path = require('path');
@@ -12,6 +12,7 @@ const ROOT = path.join(__dirname, '..');
 const API = `http://127.0.0.1:${API_PORT}`;
 const MOCK_URL = `http://127.0.0.1:${MOCK.PORT}`;
 const admin = { headers: { Authorization: `Bearer ${ADMIN_TOKEN}` } };
+const cronHeaders = { headers: { 'x-cron-secret': CRON_TRIGGER_SECRET } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -38,7 +39,8 @@ async function waitFor(fn, timeoutMs, label) {
 const health = async () => (await axios.get(`${API}/api/health/crons`, admin)).data;
 const jobHealth = async (k) => (await health()).jobs.find((j) => j.jobKey === k);
 const chaos = (file, mode) => axios.get(`${MOCK_URL}/__chaos/set`, { params: { file, mode } });
-const manual = async (k) => (await axios.post(`${API}/api/health/crons/${k}/run?wait=1`, null, admin)).data;
+// What the server crontab does, but waiting for the result.
+const cron = async (k) => (await axios.get(`${API}/api/accord-cron/${k}?wait=1`, cronHeaders)).data;
 const runs = async (k) => (await axios.get(`${API}/api/health/crons/${k}/runs?limit=50`, admin)).data;
 
 (async () => {
@@ -49,13 +51,12 @@ const runs = async (k) => (await axios.get(`${API}/api/health/crons/${k}/runs?li
 
   start('mock', 'mock-accord/server.js');
   start('api', 'src/api/server.js');
-  start('worker', 'src/worker/worker.js');
   await waitFor(() => axios.get(`${MOCK_URL}/__chaos`), 20000, 'mock');
-  await waitFor(async () => (await health()).scheduler.online, 30000, 'api + worker');
+  await waitFor(() => health(), 30000, 'api');
   await chaos('all', 'normal');
 
-  step('A. manual run, Accord healthy');
-  let r = await manual('current_nav');
+  step('A. crontab run, Accord healthy');
+  let r = await cron('current_nav');
   check('run succeeded', r.status === 'success', `${r.status} fetched=${r.recordsFetched} processed=${r.recordsProcessed}`);
   check('processed == fetched (J3)', r.recordsProcessed === r.recordsFetched);
   await mongoose.connect(MONGO_URI);
@@ -68,7 +69,7 @@ const runs = async (k) => (await axios.get(`${API}/api/health/crons/${k}/runs?li
 
   step('B. Accord returns HTTP 500');
   await chaos('Currentnav', 'fail');
-  r = await manual('current_nav');
+  r = await cron('current_nav');
   check('run failed', r.status === 'failed', r.error);
   let h = await health();
   check('current_nav failing', h.jobs.find((j) => j.jobKey === 'current_nav').status === 'failing');
@@ -76,7 +77,7 @@ const runs = async (k) => (await axios.get(`${API}/api/health/crons/${k}/runs?li
 
   step('C. Accord returns an empty file');
   await chaos('Currentnav', 'empty');
-  r = await manual('current_nav');
+  r = await cron('current_nav');
   check('run warning', r.status === 'warning');
   h = await health();
   check('current_nav delayed', h.jobs.find((j) => j.jobKey === 'current_nav').status === 'delayed');
@@ -84,22 +85,21 @@ const runs = async (k) => (await axios.get(`${API}/api/health/crons/${k}/runs?li
 
   step('D. Accord recovers');
   await chaos('Currentnav', 'normal');
-  r = await manual('current_nav');
+  r = await cron('current_nav');
   check('run success', r.status === 'success');
   check('current_nav healthy again', (await jobHealth('current_nav')).status === 'healthy');
 
-  step('E. crontab trigger (external job)');
+  step('E. crontab call without waiting');
   const noSecret = await axios.get(`${API}/api/accord-cron/sclass_mst`, { validateStatus: () => true });
   check('without x-cron-secret -> 401', noSecret.status === 401);
-  const ext = await axios.get(`${API}/api/accord-cron/sclass_mst`, { headers: { 'x-cron-secret': CRON_TRIGGER_SECRET } });
+  const ext = await axios.get(`${API}/api/accord-cron/sclass_mst`, cronHeaders);
   check('with secret -> 202 accepted immediately', ext.status === 202);
   const extRun = await waitFor(async () => (await runs('sclass_mst')).find((x) => x.status !== 'running'), 20000, 'sclass run');
-  check('background run recorded', extRun.status === 'success' && extRun.trigger === 'external', `${extRun.status}, slot ${extRun.scheduledFor}`);
+  check('background run recorded with its slot', extRun.status === 'success' && !!extRun.scheduledFor, `${extRun.status}, slot ${extRun.scheduledFor}`);
 
-  step('F. crontab hits a job that moved to the worker (migration guard)');
-  await axios.get(`${API}/api/accord-cron/amc_master`, { headers: { 'x-cron-secret': CRON_TRIGGER_SECRET } });
-  const guard = await waitFor(async () => (await runs('amc_master')).find((x) => x.trigger === 'external'), 10000, 'guard run');
-  check('external run skipped, not executed', guard.status === 'skipped', guard.reason);
+  step('F. no other way to start a job');
+  const oldManual = await axios.post(`${API}/api/health/crons/current_nav/run`, null, { ...admin, validateStatus: () => true });
+  check('manual run route is gone -> 404', oldManual.status === 404);
 
   step('G. dashboard API needs the admin token');
   const unauth = await axios.get(`${API}/api/health/crons`, { validateStatus: () => true });
@@ -107,28 +107,8 @@ const runs = async (k) => (await axios.get(`${API}/api/health/crons/${k}/runs?li
   const page = await axios.get(`${API}/dashboard`);
   check('dashboard page served', page.status === 200 && page.data.includes('Accord Cron Health'));
 
-  step('H. worker schedule + retry (amc_master every 2 min, 1 retry after 1 min)');
-  await chaos('Amc_mst', 'fail');
-  const since = new Date();
-  console.log('  waiting for the next */2 slot (up to 2 min)...');
-  const sched = await waitFor(async () => (await runs('amc_master')).find((x) => x.trigger === 'schedule' && new Date(x.startedAt) > since && x.status !== 'running'), 140000, 'scheduled run');
-  check('worker fired on schedule', true, `slot ${new Date(sched.scheduledFor).toISOString()}`);
-  check('scheduled run failed (Accord down)', sched.status === 'failed', sched.error && sched.error.message);
-  await chaos('Amc_mst', 'normal');
-  console.log('  Accord fixed - waiting for the retry (1 min)...');
-  const retry = await waitFor(async () => (await runs('amc_master')).find((x) => x.trigger === 'retry' && x.status !== 'running'), 90000, 'retry run');
-  check('retry ran as attempt 2 for the same slot', retry.attempt === 2 && retry.scheduledFor === sched.scheduledFor);
-  check('retry succeeded', retry.status === 'success', `${retry.recordsProcessed} rows`);
-  check('amc_master healthy', (await jobHealth('amc_master')).status === 'healthy');
-
-  step('I. graceful worker shutdown');
-  procs.worker.send('shutdown');
-  await waitFor(() => procs.worker.exitCode !== null, 35000, 'worker exit');
-  check('worker exited cleanly', procs.worker.exitCode === 0, `exit code ${procs.worker.exitCode}`);
-  h = await health();
-  check('dashboard shows scheduler offline', !h.scheduler.online, h.reasons.join('; '));
-
   step('Final dashboard state');
+  h = await health();
   for (const j of h.jobs) {
     console.log(`  ${j.name.padEnd(22)} ${j.status.padEnd(9)} last=${(j.lastRun && j.lastRun.status) || '-'} next=${j.nextRunAt ? new Date(j.nextRunAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) : '-'}  ${j.reasons.join('; ')}`);
   }

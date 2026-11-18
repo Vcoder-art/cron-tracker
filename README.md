@@ -148,3 +148,25 @@ Overall: **failing** if a *critical* job is failing. Otherwise **delayed** if an
 2. Move the jobs to the factory one at a time, critical ones first.
 3. Deploy the worker. Switch jobs to `internal` one at a time, removing each crontab line in the same release. The migration guard skips any leftover crontab call.
 4. Lock down or remove the public trigger URLs once nothing external is left.
+
+## Failure emails
+
+Every time a job run ends as `failed` or `interrupted`, `CronTracker` calls `src/alerts/mailer.js`, which emails
+`ALERT_MANAGER_EMAILS` + `ALERT_DEV_EMAILS`. That happens on every failure (1st, 2nd, 3rd...), with no throttling.
+Sending runs in the background. It never blocks a run or changes its result.
+
+Configure in `.env` (alerts are off until `SMTP_HOST` and at least one recipient are set):
+
+```
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+SMTP_SECURE=false          # true for port 465
+SMTP_USER=alerts@company.com
+SMTP_PASS=...
+ALERT_FROM=alerts@company.com
+ALERT_MANAGER_EMAILS=manager@company.com
+ALERT_DEV_EMAILS=dev1@company.com,dev2@company.com   # optional
+ALERT_DASHBOARD_URL=https://wms.example.com/cron-health   # optional link in the email
+```
+
+Not covered: a run the crontab never called (nothing runs, so nothing can alert). The dashboard shows it as `delayed`.
