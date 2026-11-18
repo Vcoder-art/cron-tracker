@@ -16,6 +16,7 @@ const CronJob = require('../models/CronJob');
 const CronRun = require('../models/CronRun');
 const { prevSlot } = require('./schedule');
 const { TRACKER } = require('../config');
+const { notifyRunResult } = require('../alerts/mailer');
 
 // Who we are, written into the lock: "host:pid".
 const OWNER = `${os.hostname()}:${process.pid}`;
@@ -149,7 +150,7 @@ async function markInterrupted(jobKey, oldLock, now) {
   ).lean();
   if (!deadRun) return;
 
-  await CronJob.updateOne({ jobKey }, {
+  const job = await CronJob.findOneAndUpdate({ jobKey }, {
     $set: {
       lastRun: {
         runId: deadRun._id, status: 'interrupted', startedAt: deadRun.startedAt, finishedAt: now,
@@ -157,8 +158,11 @@ async function markInterrupted(jobKey, oldLock, now) {
       },
     },
     $inc: { consecutiveFailures: 1 },
-  });
+  }, { new: true }).lean();
   log(jobKey, `previous run ${deadRun._id} marked interrupted`);
+
+  // Email in the background; never blocks the new run.
+  if (job) notifyRunResult(job, { ...deadRun, runId: deadRun._id });
 }
 
 // Every HEARTBEAT_MS push the lock's expiry forward, so a long job keeps its lock.
@@ -183,9 +187,9 @@ function startHeartbeat(jobKey, runId) {
 // Never throws: if Mongo is down here, the lock simply expires on its own.
 async function saveResult(jobKey, runId, startedAt, finishedAt, durationMs, { status, fetched, processed, reason, error }) {
   try {
-    await CronRun.updateOne({ _id: runId }, {
+    const run = await CronRun.findOneAndUpdate({ _id: runId }, {
       $set: { status, finishedAt, durationMs, recordsFetched: fetched, recordsProcessed: processed, reason, error },
-    });
+    }, { new: true }).lean();
 
     const lastRun = {
       runId, status, startedAt, finishedAt, durationMs,
@@ -196,10 +200,13 @@ async function saveResult(jobKey, runId, startedAt, finishedAt, durationMs, { st
     if (status === 'success') jobUpdate = { $set: { lastRun, lastSuccessAt: finishedAt, consecutiveFailures: 0 } };
     else if (status === 'failed') jobUpdate = { $set: { lastRun }, $inc: { consecutiveFailures: 1 } };
     else jobUpdate = { $set: { lastRun } }; // warning: failure counter unchanged
-    await CronJob.updateOne({ jobKey }, jobUpdate, { timestamps: false });
+    const job = await CronJob.findOneAndUpdate({ jobKey }, jobUpdate, { new: true, timestamps: false }).lean();
 
     // Release the lock - but only if it is still ours.
     await CronJob.updateOne({ jobKey, 'lock.runId': runId }, { $set: { lock: null } }, { timestamps: false });
+
+    // Failed? Email the managers + devs. In the background; never throws.
+    if (job && run) notifyRunResult(job, { ...run, runId });
   } catch (e) {
     log(jobKey, `could not save result of run ${runId}: ${e.message}`);
   }
